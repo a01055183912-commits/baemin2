@@ -223,6 +223,28 @@
     return { html: html, bannedHits: bannedHits, usedFields: usedFields };
   }
 
+  // 배민 전용 구조 검수: "메뉴 -> 맛/식감 -> 재료/조리 -> ... -> 가게다운 한마디" 순서를
+  // 지키는지, 즉 메뉴 정보가 첫 문장에 나오는지 확인한다.
+  function checkMenuFirst(text, store) {
+    if (!store.menu) { return null; }
+    var kws = extractKeywords("menu", store.menu);
+    if (!kws.length) { return null; }
+    var earliest = -1;
+    kws.forEach(function (kw) {
+      var i = text.indexOf(kw);
+      if (i !== -1 && (earliest === -1 || i < earliest)) { earliest = i; }
+    });
+    if (earliest === -1) {
+      return "메뉴 이름·가격이 본문에 보이지 않습니다 — 배민은 메뉴부터 보여주세요.";
+    }
+    var firstSentence = text.match(/^[\s\S]*?[.!?\n]/);
+    var firstSentenceLen = firstSentence ? firstSentence[0].length : text.length;
+    if (earliest >= firstSentenceLen) {
+      return "메뉴 정보가 뒤로 밀렸습니다 — 배민은 메뉴부터 보여주세요.";
+    }
+    return null;
+  }
+
   function paint(key, text, chips, store) {
     var r = refs[key], p = null;
     for (var i = 0; i < PLATFORMS.length; i++) { if (PLATFORMS[i].key === key) { p = PLATFORMS[i]; } }
@@ -259,6 +281,10 @@
     var msgs = [];
     if (m.bannedHits.length) { msgs.push("근거 없는 과장 표현: " + m.bannedHits.join(", ") + " — 사실 표현으로 바꾸세요."); }
     if (p.limit && n > p.limit) { msgs.push("입력 한도 " + p.limit + "자를 " + (n - p.limit) + "자 넘겼습니다."); }
+    if (key === "baemin") {
+      var menuMsg = checkMenuFirst(text, store);
+      if (menuMsg) { msgs.push(menuMsg); }
+    }
     if (msgs.length) {
       r.flag.hidden = false; r.flag.className = "flag"; r.flag.textContent = msgs.join(" / ");
     } else {
