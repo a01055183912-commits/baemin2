@@ -1,0 +1,16 @@
+{
+  "name": "baemin2-store-copy-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "가게다운 AI 홍보글 작업대 - 배민/네이버/카카오맵/인스타그램 플랫폼별 홍보글 생성 웹앱",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}
