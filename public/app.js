@@ -125,29 +125,102 @@
   function esc(t) {
     return t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
-  function markBanned(t) {
-    var pat = new RegExp("(" + BANNED.map(function (w) {
-      return w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    }).join("|") + ")", "g");
-    var hits = [];
-    var html = esc(t).replace(pat, function (m) {
-      if (hits.indexOf(m) === -1) { hits.push(m); }
-      return "<mark>" + m + "</mark>";
-    });
-    return { html: html, hits: hits };
+
+  // 한국어 조사를 뗀 어근도 같은 의미단어로 인식시켜 매칭을 넓힌다.
+  var PARTICLES = ["에서만", "으로는", "에게서", "이라도", "이라서", "이지만",
+    "에서", "에게", "으로", "까지", "부터", "처럼", "같이", "보다", "이나", "라도",
+    "이며", "으며", "이고", "만큼", "는", "은", "이", "가", "을", "를", "의",
+    "에", "로", "와", "과", "도", "만", "나"];
+  function stripParticle(w) {
+    for (var i = 0; i < PARTICLES.length; i++) {
+      var p = PARTICLES[i];
+      if (w.length - p.length >= 2 && w.slice(-p.length) === p) { return w.slice(0, -p.length); }
+    }
+    return w;
   }
-  function factsUsed(t, s) {
-    var used = [];
-    Object.keys(FIELDS).forEach(function (k) {
-      var v = s[k];
-      if (!v) { return; }
-      var pieces = k === "menu" ? menuLines(s) : [v];
-      for (var i = 0; i < pieces.length; i++) {
-        var token = pieces[i].split(/[\s,·]/).filter(function (w) { return w.length > 1; })[0];
-        if (token && t.indexOf(token) !== -1) { used.push(FIELDS[k]); return; }
+  function splitWords(v) {
+    return v.split(/[\s,·/()]+/).map(function (w) { return w.trim(); }).filter(Boolean);
+  }
+
+  // 필드 하나에서 본문과 매칭해 볼 "의미단어" 후보를 뽑는다: 원문 전체(짧으면),
+  // 낱말, 조사를 뗀 어근, 메뉴는 이름/가격을 따로.
+  function extractKeywords(key, value) {
+    var out = [];
+    function add(w) {
+      w = (w || "").trim();
+      if (w.length >= 2 && out.indexOf(w) === -1) { out.push(w); }
+    }
+    if (!value) { return out; }
+    if (key === "menu") {
+      menuLines({ menu: value }).forEach(function (line) {
+        add(line);
+        var name = line.replace(/[0-9,.]+\s*원.*$/, "").trim();
+        add(name);
+        var price = line.match(/[0-9][0-9,]*\s*원/);
+        if (price) { add(price[0].replace(/\s+/g, "")); }
+      });
+      return out;
+    }
+    if (value.length <= 16) { add(value); }
+    splitWords(value).forEach(function (w) {
+      add(w);
+      add(stripParticle(w));
+    });
+    return out;
+  }
+
+  // 과장 표현(banned)과 입력한 가게 사실에서 나온 의미단어(fact)를 본문에서 함께 찾아
+  // 겹치지 않게 배치한 뒤, 과장 표현은 <mark>로, 의미단어는 밑줄 <span>으로 표시한다.
+  function buildHighlight(text, store) {
+    var spans = [];
+    BANNED.forEach(function (w) {
+      var idx = 0, i;
+      while ((i = text.indexOf(w, idx)) !== -1) {
+        spans.push({ start: i, end: i + w.length, type: "banned", label: w });
+        idx = i + w.length;
       }
     });
-    return used;
+    var usedFields = [];
+    Object.keys(FIELDS).forEach(function (k) {
+      var v = store[k];
+      if (!v) { return; }
+      var matched = false;
+      extractKeywords(k, v).forEach(function (kw) {
+        var idx = 0, i;
+        while ((i = text.indexOf(kw, idx)) !== -1) {
+          spans.push({ start: i, end: i + kw.length, type: "fact", label: FIELDS[k] });
+          matched = true;
+          idx = i + kw.length;
+        }
+      });
+      if (matched) { usedFields.push(FIELDS[k]); }
+    });
+
+    spans.sort(function (a, b) {
+      if (a.start !== b.start) { return a.start - b.start; }
+      var lenDiff = (b.end - b.start) - (a.end - a.start);
+      if (lenDiff !== 0) { return lenDiff; }
+      return a.type === "banned" ? -1 : 1;
+    });
+    var accepted = [], lastEnd = -1;
+    spans.forEach(function (sp) {
+      if (sp.start >= lastEnd) { accepted.push(sp); lastEnd = sp.end; }
+    });
+
+    var html = "", pos = 0, bannedHits = [];
+    accepted.forEach(function (sp) {
+      html += esc(text.slice(pos, sp.start));
+      var chunk = esc(text.slice(sp.start, sp.end));
+      if (sp.type === "banned") {
+        html += "<mark>" + chunk + "</mark>";
+        if (bannedHits.indexOf(sp.label) === -1) { bannedHits.push(sp.label); }
+      } else {
+        html += '<span class="factlink" title="가게 사실: ' + esc(sp.label) + '">' + chunk + "</span>";
+      }
+      pos = sp.end;
+    });
+    html += esc(text.slice(pos));
+    return { html: html, bannedHits: bannedHits, usedFields: usedFields };
   }
 
   function paint(key, text, chips, store) {
@@ -164,7 +237,7 @@
       r.count.textContent = "";
       return;
     }
-    var m = markBanned(text);
+    var m = buildHighlight(text, store);
     r.body.className = "body";
     r.body.innerHTML = m.html;
 
@@ -184,7 +257,7 @@
     } else { r.tags.hidden = true; }
 
     var msgs = [];
-    if (m.hits.length) { msgs.push("근거 없는 과장 표현: " + m.hits.join(", ") + " — 사실 표현으로 바꾸세요."); }
+    if (m.bannedHits.length) { msgs.push("근거 없는 과장 표현: " + m.bannedHits.join(", ") + " — 사실 표현으로 바꾸세요."); }
     if (p.limit && n > p.limit) { msgs.push("입력 한도 " + p.limit + "자를 " + (n - p.limit) + "자 넘겼습니다."); }
     if (msgs.length) {
       r.flag.hidden = false; r.flag.className = "flag"; r.flag.textContent = msgs.join(" / ");
@@ -192,10 +265,9 @@
       r.flag.hidden = false; r.flag.className = "flag ok"; r.flag.textContent = "과장 표현 없음 · 입력 기준 이내";
     }
 
-    var used = factsUsed(text, store);
-    if (used.length) {
+    if (m.usedFields.length) {
       r.used.hidden = false;
-      r.used.textContent = "사용한 우리 가게 사실 — " + used.join(" · ");
+      r.used.textContent = "사용한 우리 가게 사실 — " + m.usedFields.join(" · ") + " (본문의 밑줄 친 단어에 마우스를 올리면 확인할 수 있습니다)";
     } else { r.used.hidden = true; }
   }
 
